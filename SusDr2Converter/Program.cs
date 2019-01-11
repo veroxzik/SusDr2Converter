@@ -81,22 +81,6 @@ namespace SusDr2Converter
                         {
                             switch (parsed.Notes[i].Item1)
                             {
-                                //case 1: // Left Step
-                                //    Steps.Add(new Note(4 * (parsed.Measure + i * noteSub), parsed.LaneIndex, parsed.Notes[i].Item2, Side.Left));
-                                //    break;
-                                //case 2: // Right Step
-                                //    Steps.Add(new Note(4 * (parsed.Measure + i * noteSub), parsed.LaneIndex, parsed.Notes[i].Item2, Side.Right));
-                                //    break;
-                                //case 3: // Motion Up
-                                //    // Motions.Add(new Note(4 * (parsed.Measure + i * noteSub), parsed.LaneIndex, parsed.Notes[i].Item2, Motion.Up));
-                                //    Motions.Add(new Note(4 * (parsed.Measure + i * noteSub), 0, 16, Motion.Up));
-                                //    break;
-                                //case 4: // Motion Down
-                                //    //Motions.Add(new Note(4 * (parsed.Measure + i * noteSub), parsed.LaneIndex, parsed.Notes[i].Item2, Motion.Down));
-                                //    Motions.Add(new Note(4 * (parsed.Measure + i * noteSub), 0, 16, Motion.Down));
-                                //    break;
-                                //default:    // Rest notes / spacers (0) are ignored
-                                //    break;
                                 case 1: // Tap
                                 case 2: // ExTap
                                 case 3: // Flick
