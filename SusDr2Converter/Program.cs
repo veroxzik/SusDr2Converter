@@ -12,30 +12,93 @@ namespace SusDr2Converter
     {
         static void Main(string[] args)
         {
+            string command = "";
+            bool filesInFolder = false;
+            bool recursive = false;
+            bool fileIsValid = false;
+            List<string> filenames = new List<string>();
             if (args.Length == 0 || args[0].Contains("--?") || args[0].Contains("/?") || args[0].Contains("--help"))
             {
-                Console.WriteLine("Welcome to the SUS <-> DR2 Converter!");
-                Console.WriteLine("Help will go here, eventually.");
-                Console.WriteLine("Press Enter to close.");
-                Console.ReadLine();
+                Console.WriteLine();
+                Console.WriteLine("Welcome to the SUS <-> DR2 Converter! (Version 0.1)");
+                Console.WriteLine();
+                Console.WriteLine("For the time being, only SUS->DR2 conversion is possible.");
+                Console.WriteLine();
+                Console.WriteLine("To convert a single file, type the path here now (include file extension), or run the .exe with the path as the first and only argument.");
+                Console.WriteLine("To convert all files in this folder, type \"folder\", or run the .exe with the argument --f");
+                Console.WriteLine("To convert all files in this folder and every sub-folder recursively, type \"recursive\", or run the .exe with the argument --r");
+                Console.WriteLine();
+                Console.WriteLine("**WARNING** This program will overwrite existing conversions. Back them up if you do not wish to lose them.");
+                Console.WriteLine();
+                Console.WriteLine("Otherwise, press Enter to close.");
+                command = Console.ReadLine();
+
+                if (string.IsNullOrEmpty(command))
+                    Environment.Exit(0);
             }
+
+            if (command.ToLower() == "folder" || (args.Length > 0 && args[0].ToLower() == "--f"))
+                filesInFolder = true;
+            else if (command.ToLower() == "recursive" || (args.Length > 0 && args[0].ToLower() == "--r"))
+                recursive = true;
             else
             {
-                Console.WriteLine("Parsing {0}...", args[0]);
+                if (string.IsNullOrEmpty(command) && args.Length > 0)
+                    command = args[0];
+                if (!File.Exists(command))
+                {
+                    Console.WriteLine("The specified file {0} cannot be found. Press Enter to close.", command);
+                    Console.ReadLine();
+                    Environment.Exit(0);
+                }
+
+                filenames.Add(command);
+                fileIsValid = true;
             }
 
-            // Check which direction we're going
-            if(args[0].EndsWith(".sus"))
+            if(recursive)
             {
-                Dr2Metadata meta;
-                var notes = ParseSus(args[0], out meta);
-                string exportName = args[0].Replace(".sus", ".dr2");
-                ExportDr2(exportName, notes, meta);
+                var filesHere = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory);
+                foreach (var file in filesHere)
+                {
+                    if (file.EndsWith(".sus"))
+                        filenames.Add(file);
+                }
+                SearchForFile(ref filenames, AppDomain.CurrentDomain.BaseDirectory, ".sus");
             }
-            else if (args[0].EndsWith(".dr2"))
-            {
 
+            if(filesInFolder)
+            {
+                var files = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory);
+                foreach (var file in files)
+                {
+                    if (file.EndsWith(".sus"))
+                        filenames.Add(file);
+                }
             }
+
+            foreach (var file in filenames)
+            {
+                Console.WriteLine("Parsing {0}...", file);
+
+                // Check which direction we're going
+                if (file.EndsWith(".sus"))
+                {
+                    Dr2Metadata meta;
+                    var notes = ParseSus(file, out meta);
+                    string exportName = file.Replace(".sus", ".dr2");
+                    ExportDr2(exportName, notes, meta);
+                    Globals.ResetFlags();
+                }
+                else if (file.EndsWith(".dr2"))
+                {
+                    Console.WriteLine("DR2->SUS is not yet supported.");
+                }
+                Console.WriteLine("Parse is complete.");
+                Console.WriteLine("");
+            }
+            Console.WriteLine("Press Enter to close.");
+            Console.ReadLine();
         }
 
         static List<Dr2Note> ParseSus(string filename, out Dr2Metadata metadata)
@@ -50,8 +113,8 @@ namespace SusDr2Converter
             List<Tuple<NoteParse, int>> unmatchedAirs = new List<Tuple<NoteParse, int>>();
             List<NoteParse> unmatchedAirLane = new List<NoteParse>();
 
-            Dictionary<int, int> slideIDlist = new Dictionary<int, int>();
-            List<List<Tuple<NoteParse, int>>> slideNotes = new List<List<Tuple<NoteParse, int>>>();
+            Dictionary<int, SlideCollection> tempSlideDict = new Dictionary<int, SlideCollection>();
+            List<SlideCollection> slideNotes = new List<SlideCollection>();
 
             List<NoteParse> failedNotes = new List<NoteParse>();
 
@@ -69,7 +132,22 @@ namespace SusDr2Converter
                     else if (Regex.Match(line, "(#BPM)").Success)
                     {
                         string[] split = line.Split(bpmSplit, StringSplitOptions.RemoveEmptyEntries);
-                        bpmChanges.Add(Convert.ToInt32(split[0]), new Dr2BpmChange() { Bpm = Convert.ToDouble(split[1]), BpmStart = -1 });
+                        int index = ParseAlphanumeric(split[0].Substring(1));
+                        if (!bpmChanges.ContainsKey(index))
+                            bpmChanges.Add(index, new Dr2BpmChange() { Bpm = Convert.ToDouble(split[1]), BpmStart = -1 });
+                        else
+                            Globals.MultipleBPMLinesPresent = true;
+                        
+                    }
+                    else if (line.StartsWith("#DIFFICULTY"))
+                    {
+                        string[] split = line.Split(new string[] { "#DIFFICULTY", ":", "\"" }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var numStr in split)
+                        {
+                            int num;
+                            if (int.TryParse(numStr, out num))
+                                metadata.Difficulty = num;
+                        }
                     }
 
                     // Regex match for Single Notes
@@ -116,15 +194,39 @@ namespace SusDr2Converter
                                 switch (parsed.Notes[i].Item1)
                                 {
                                     case 1: // Start Note
-                                        // Definitely create a new list
-                                        slideNotes.Add(new List<Tuple<NoteParse, int>>());
-                                        slideIDlist[parsed.NoteIdentifier] = slideNotes.Count - 1;
-                                        slideNotes[slideIDlist[parsed.NoteIdentifier]].Add(new Tuple<NoteParse, int>(parsed, i));
+                                    case 2: // End Note
+                                        // Check if a collection for this already exists
+                                        if (tempSlideDict.ContainsKey(parsed.NoteIdentifier))
+                                        {
+                                            // Check to see if it already has a start and end
+                                            if (tempSlideDict[parsed.NoteIdentifier].containsStart && tempSlideDict[parsed.NoteIdentifier].containsEnd)
+                                            {
+                                                // Then commit this and start a new one
+                                                slideNotes.Add(tempSlideDict[parsed.NoteIdentifier]);
+                                                tempSlideDict[parsed.NoteIdentifier] = new SlideCollection();
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Add a new one
+                                            tempSlideDict.Add(parsed.NoteIdentifier, new SlideCollection());
+                                        }
+                                        // Add this note to it
+                                        tempSlideDict[parsed.NoteIdentifier].Notes.Add(new Tuple<NoteParse, int>(parsed, i));
                                         break;
-                                    case 2: // End Note, can't guarantee this is the true end
                                     case 3: // Bend Note Step
                                     case 5: // Bend Note Invisible
-                                        slideNotes[slideIDlist[parsed.NoteIdentifier]].Add(new Tuple<NoteParse, int>(parsed, i));
+                                        if (!tempSlideDict.ContainsKey(parsed.NoteIdentifier))
+                                            tempSlideDict.Add(parsed.NoteIdentifier, new SlideCollection());    // Add a new one
+                                        // Add this note to it
+                                        tempSlideDict[parsed.NoteIdentifier].Notes.Add(new Tuple<NoteParse, int>(parsed, i));
+                                        break;
+                                    case 4: // Bezier notes
+                                        // DR2 doesn't support bezier notes
+                                        if (!tempSlideDict.ContainsKey(parsed.NoteIdentifier))
+                                            tempSlideDict.Add(parsed.NoteIdentifier, new SlideCollection());    // Add a new one
+                                        // Add this note to it
+                                        tempSlideDict[parsed.NoteIdentifier].Notes.Add(new Tuple<NoteParse, int>(parsed, i));
                                         break;
                                     default:
                                         break;
@@ -221,19 +323,34 @@ namespace SusDr2Converter
                     // ** DR2 does not support dynamic time signature changes, so we just grab the first one **
                     else if (Regex.IsMatch(line, "[#][0-9]{3}(02)"))
                     {
-                        var parsed = ParseLine(line);
+                        var parsed = ParseLine(line, true);
 
                         if (metadata.Beat == -1)
-                            metadata.Beat = parsed.Notes[0].Item1 / 4;
+                            metadata.Beat = parsed.Values[0] / 4;
+                    }
+                    // Parse Speed Changes
+                    else if (Regex.IsMatch(line, "(#TIL)"))
+                    {
+                        if (line.StartsWith("#TIL00"))
+                        {
+                            // Parse properly
+                        }
+                        else
+                            Globals.ComplexTimeChangesPresent = true;
                     }
                 }
             }
 
             // Generate slide notes
+            // Commit leftover notes
+            foreach (var item in tempSlideDict)
+            {
+                slideNotes.Add(item.Value);
+            }
             foreach (var list in slideNotes)
             {
-                list.Sort((x, y) => (x.Item1.Measure + x.Item2 * (1.0 / x.Item1.Notes.Count)).CompareTo(y.Item1.Measure + y.Item2 * (1.0 / y.Item1.Notes.Count)));
-                foreach (var tuple in list)
+                list.Notes.Sort((x, y) => (x.Item1.Measure + x.Item2 * (1.0 / x.Item1.Notes.Count)).CompareTo(y.Item1.Measure + y.Item2 * (1.0 / y.Item1.Notes.Count)));
+                foreach (var tuple in list.Notes)
                 {
                     var parsed = tuple.Item1;
                     double noteSub = 1.0 / parsed.Notes.Count;
@@ -314,13 +431,21 @@ namespace SusDr2Converter
                 metadata.BpmChanges.Add(item.Value);
             }
 
+            if (Globals.BezierNotesPresent)
+                Console.WriteLine("Bezier notes were found in this chart. This is not supported by *.dr2 currently and will appear as straight slides.");
+            if (Globals.ComplexTimeChangesPresent)
+                Console.WriteLine("Complex speed changes were found in this chart and this cannot be parsed at this time. It is not recommended to play this conversion.");
+            if (Globals.MultipleBPMLinesPresent)
+                Console.WriteLine("Multiple BPM commands with the same keys were found. The first one was used and the rest were ignored.");
+
             return dr2Notes;
         }
 
-        static private NoteParse ParseLine(string line)
+        static private NoteParse ParseLine(string line, bool forceSingleNum)
         {
             NoteParse parse;
             parse.Notes = new List<Tuple<int, int>>();
+            parse.Values = new List<double>();
 
             string[] split = line.Split(':');
             string meta = split[0];
@@ -330,23 +455,28 @@ namespace SusDr2Converter
             parse.NoteClass = Convert.ToInt32(meta.Substring(4, 1));
             parse.LaneIndex = Convert.ToInt32(meta.Substring(5, 1), 16);
             if (meta.Length == 7)
-                parse.NoteIdentifier = ParseIdentifier(line.Substring(6, 1));
+                parse.NoteIdentifier = ParseAlphanumeric(line.Substring(6, 1));
             else
                 parse.NoteIdentifier = -1;
 
-            if (notes.Length == 1)
+            if (notes.Length == 1 || forceSingleNum)
             {
-                parse.Notes.Add(new Tuple<int, int>(Convert.ToInt32(notes), -1));
+                parse.Values.Add(Convert.ToDouble(notes));
             }
             else
             {
                 for (int i = 0; i < notes.Length; i += 2)
                 {
-                    parse.Notes.Add(new Tuple<int, int>(Convert.ToInt32(notes.Substring(i, 1)), ParseNoteWidth(notes.Substring(i + 1, 1))));
+                    parse.Notes.Add(new Tuple<int, int>(Convert.ToInt32(notes.Substring(i, 1)), ParseAlphanumeric(notes.Substring(i + 1, 1))));
                 }
             }
 
             return parse;
+        }
+
+        static private NoteParse ParseLine(string line)
+        {
+            return ParseLine(line, false);
         }
 
         struct NoteParse
@@ -356,22 +486,15 @@ namespace SusDr2Converter
             public int LaneIndex;
             public int NoteIdentifier;
             public List<Tuple<int, int>> Notes;
+            public List<double> Values;
         }
 
-        static private int ParseNoteWidth(string s)
+        static private int ParseAlphanumeric(string s)
         {
             if (Regex.IsMatch(s, "[0-9]"))
                 return Convert.ToInt32(s);
             else
                 return Convert.ToInt32(s.ToLower()[0]) - 'a' + 10;
-        }
-
-        static private int ParseIdentifier(string s)
-        {
-            if (Regex.IsMatch(s, "[0-9]"))
-                return Convert.ToInt32(s);
-            else
-                return Convert.ToInt32(s.ToUpper()[0]) - 'A' + 10;
         }
 
         class Dr2Note
@@ -405,6 +528,8 @@ namespace SusDr2Converter
                         return 2;
                     case 3: // Flick
                         return 9;
+                    case 4: // Damage
+                        return 10;
                     default:
                         break;
                 }
@@ -450,6 +575,9 @@ namespace SusDr2Converter
                     case 2: // End
                     case 3: // Bend Point (Step)
                         return 7;
+                    case 4: // Inflection point (nominally curved)
+                        Globals.BezierNotesPresent = true;
+                        return 6;
                     case 5: // Bend Point (invisible)
                         return 6;
                     default:
@@ -475,7 +603,15 @@ namespace SusDr2Converter
 
         static void ExportDr2(string filename, List<Dr2Note> notes, Dr2Metadata metadata)
         {
-            using (StreamWriter sw = new StreamWriter(new FileStream(filename, FileMode.CreateNew)))
+            if (metadata.Difficulty == -1)
+            {
+                Console.WriteLine("No difficulty found. The file will end in \".X.dr2\" so you can search for it.");
+                filename = filename.Replace(".dr2", ".X.dr2");
+            }
+            else
+                filename = filename.Replace(".dr2", "." + metadata.Difficulty + ".dr2");
+
+            using (StreamWriter sw = new StreamWriter(new FileStream(filename, FileMode.Create)))
             {
                 sw.WriteLine("#NDNAME='{0}';", metadata.Designer);
                 sw.WriteLine("#OFFSET={0};", metadata.Offset);
@@ -510,25 +646,63 @@ namespace SusDr2Converter
             }
         }
 
-        public class Dr2Metadata
+        class SlideCollection
+        {
+            public List<Tuple<NoteParse, int>> Notes = new List<Tuple<NoteParse, int>>();
+            public bool containsStart { get { return Notes.FirstOrDefault(x => x.Item1.NoteClass == 1) == null ? false : true; } }
+            public bool containsEnd { get { return Notes.FirstOrDefault(x => x.Item1.NoteClass == 2) == null ? false : true; } }
+        }
+
+        class Dr2Metadata
         {
             public string Designer;
             public double Offset = 0;
             public double Beat = -1;
             public List<Dr2BpmChange> BpmChanges = new List<Dr2BpmChange>();
             public List<Dr2SpeedChange> SpeedChanges = new List<Dr2SpeedChange>();
+            public int Difficulty = -1;
         }
 
-        public class Dr2BpmChange
+        class Dr2BpmChange
         {
             public double Bpm;
             public double BpmStart; // Looks like it's just the measure? Unsure what BPMS stands for
         }
 
-        public class Dr2SpeedChange
+        class Dr2SpeedChange
         {
             public double SpeedChange;
             public double SpeedChangeIndex; // Looks like it's just the measure? Unsure what SCI stands for
+        }
+
+        static void SearchForFile(ref List<string> filenames, string startFolder, string fileFormat)
+        {
+            var folders = Directory.GetDirectories(startFolder);
+            foreach (var folder in folders)
+            {
+                var files = Directory.GetFiles(folder);
+                foreach (var file in files)
+                {
+                    if (file.EndsWith(fileFormat))
+                        filenames.Add(file);
+                }
+                SearchForFile(ref filenames, folder, fileFormat);
+            }
+        }
+    }
+
+    
+    public static class Globals
+    {
+        public static bool MultipleBPMLinesPresent = false;
+        public static bool BezierNotesPresent = false;
+        public static bool ComplexTimeChangesPresent = false;
+
+        public static void ResetFlags()
+        {
+            MultipleBPMLinesPresent = false;
+            BezierNotesPresent = false;
+            ComplexTimeChangesPresent = false;
         }
     }
 }
