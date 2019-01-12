@@ -89,6 +89,7 @@ namespace SusDr2Converter
                     string exportName = file.Replace(".sus", ".dr2");
                     ExportDr2(exportName, notes, meta);
                     Globals.ResetFlags();
+                    NoteIncrementer.Reset();
                 }
                 else if (file.EndsWith(".dr2"))
                 {
@@ -117,6 +118,8 @@ namespace SusDr2Converter
             List<SlideCollection> slideNotes = new List<SlideCollection>();
 
             List<NoteParse> failedNotes = new List<NoteParse>();
+
+            int ticksPerBeat = 192; // Default value
 
             using (StreamReader sr = new StreamReader(filename))
             {
@@ -147,6 +150,17 @@ namespace SusDr2Converter
                             int num;
                             if (int.TryParse(numStr, out num))
                                 metadata.Difficulty = num;
+                        }
+                    }
+                    else if (line.StartsWith("#REQUEST"))
+                    {
+                        if(line.Contains("ticks_per_beat"))
+                        {
+                            string[] split = line.Split(new string[] { "#REQUEST", "\"", " " }, StringSplitOptions.RemoveEmptyEntries);
+                            if (split[0] == "ticks_per_beat")
+                                ticksPerBeat = Convert.ToInt32(split[1]);
+                            else
+                                Globals.ErrorParsingTicksPerBeat = true;
                         }
                     }
 
@@ -333,10 +347,33 @@ namespace SusDr2Converter
                     {
                         if (line.StartsWith("#TIL00"))
                         {
-                            // Parse properly
+                            string[] split = line.Split(new string[] { "#TIL00", ":", ",", "\"", "'", " " }, StringSplitOptions.RemoveEmptyEntries);
+                            if(split.Length == 0)
+                            {
+                                metadata.SpeedChanges.Add(new Dr2SpeedChange() { SpeedChange = 1.0, SpeedChangeIndex = 0.0 });
+                            }
+                            else if(split.Length % 3 != 0)
+                            {
+                                Globals.ErrorParsingSpeedChange = true;
+                            }
+                            else
+                            {
+                                for (int i = 0; i < split.Length; i+=3)
+                                {
+                                    double measure = Convert.ToDouble(split[i]) + Convert.ToDouble(split[i + 1]) / (ticksPerBeat * (metadata.Beat * 4));
+                                    double speed = Convert.ToDouble(split[i + 2]);
+
+                                    metadata.SpeedChanges.Add(new Dr2SpeedChange() { SpeedChange = speed, SpeedChangeIndex = measure });
+                                }
+                            }
                         }
                         else
-                            Globals.ComplexTimeChangesPresent = true;
+                            Globals.ComplexSpeedChangesPresent = true;
+                    }
+                    // Attributes tag is not supported
+                    else if(Regex.IsMatch(line, "(#ATR)") || Regex.IsMatch(line, "(#ATTR)"))
+                    {
+                        Globals.AttributesTagPresent = true;
                     }
                 }
             }
@@ -432,11 +469,17 @@ namespace SusDr2Converter
             }
 
             if (Globals.BezierNotesPresent)
-                Console.WriteLine("Bezier notes were found in this chart. This is not supported by *.dr2 currently and will appear as straight slides.");
-            if (Globals.ComplexTimeChangesPresent)
-                Console.WriteLine("Complex speed changes were found in this chart and this cannot be parsed at this time. It is not recommended to play this conversion.");
+                Console.WriteLine("WARNING: Bezier notes were found in this chart. This is not supported by *.dr2 currently and will appear as straight slides.");
+            if (Globals.ComplexSpeedChangesPresent)
+                Console.WriteLine("ERROR: Complex speed changes were found in this chart and this cannot be parsed at this time. It is not recommended to play this conversion.");
             if (Globals.MultipleBPMLinesPresent)
-                Console.WriteLine("Multiple BPM commands with the same keys were found. The first one was used and the rest were ignored.");
+                Console.WriteLine("WARNING: Multiple BPM commands with the same keys were found. The first one was used and the rest were ignored.");
+            if(Globals.AttributesTagPresent)
+                Console.WriteLine("ERROR: Attribute tags were found in this chart and this cannot be parsed at this time. It is not recommended to play this conversion.");
+            if (Globals.ErrorParsingTicksPerBeat)
+                Console.WriteLine("ERROR: Could not parse ticks_per_beat, which makes speed changes incorrect. It is not recommended to play this conversion.");
+            if (Globals.ErrorParsingSpeedChange)
+                Console.WriteLine("ERROR: Speed change could not be parsed, unexpected number of arguments. Check original file");
 
             return dr2Notes;
         }
@@ -621,8 +664,8 @@ namespace SusDr2Converter
                     sw.WriteLine("#BPM [{0}]={1}", i, metadata.BpmChanges[i].Bpm);
                     sw.WriteLine("#BPMS[{0}]={1}", i, metadata.BpmChanges[i].BpmStart);
                 }
-                if(metadata.SpeedChanges.Count == 0)
-                    metadata.SpeedChanges.Add(new Dr2SpeedChange() { SpeedChange = 1, SpeedChangeIndex = 0 });
+                if(metadata.SpeedChanges.Count == 0 || metadata.SpeedChanges.FirstOrDefault(x=> x.SpeedChangeIndex == 0) == null)
+                    metadata.SpeedChanges.Insert(0, new Dr2SpeedChange() { SpeedChange = 1, SpeedChangeIndex = 0 });
                 sw.WriteLine("#SCN={0}", metadata.SpeedChanges.Count);
                 for (int i = 0; i < metadata.SpeedChanges.Count; i++)
                 {
@@ -696,13 +739,19 @@ namespace SusDr2Converter
     {
         public static bool MultipleBPMLinesPresent = false;
         public static bool BezierNotesPresent = false;
-        public static bool ComplexTimeChangesPresent = false;
+        public static bool ComplexSpeedChangesPresent = false;
+        public static bool AttributesTagPresent = false;
+        public static bool ErrorParsingSpeedChange = false;
+        public static bool ErrorParsingTicksPerBeat = false;
 
         public static void ResetFlags()
         {
             MultipleBPMLinesPresent = false;
             BezierNotesPresent = false;
-            ComplexTimeChangesPresent = false;
+            ComplexSpeedChangesPresent = false;
+            AttributesTagPresent = false;
+            ErrorParsingSpeedChange = false;
+            ErrorParsingTicksPerBeat = false;
         }
     }
 }
