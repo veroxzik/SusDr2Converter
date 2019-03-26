@@ -462,6 +462,19 @@ namespace SusDr2Converter
             // Re-sort notes by measure
             dr2Notes.Sort((x, y) => x.Measure.CompareTo(y.Measure));
 
+            // Reorder ID by measure
+            var dictID = new Dictionary<int, int>();
+            for (int i = 0; i < dr2Notes.Count; i++)
+            {
+                dictID.Add(dr2Notes[i].ID, i);
+            }
+            for (int i = 0; i < dr2Notes.Count; i++)
+            {
+                dr2Notes[i].ID = dictID[dr2Notes[i].ID];
+                if(dr2Notes[i].ParentID != 0)
+                    dr2Notes[i].ParentID = dictID[dr2Notes[i].ParentID];
+            }
+
             // Add BPM changes into metadata
             foreach (var item in bpmChanges)
             {
